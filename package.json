@@ -1,7 +1,6 @@
 {
   "name": "dsh-task-flow",
-  "version": "1.0.0",
-  "private": true,
+  "version": "1.1.0",
   "description": "任务星图：樱花主题的任务流程可视化插件 — 点开按钮即见任务进行到哪一步、如何继续、有哪些分支",
   "type": "module",
   "main": "lib/index.js",
@@ -16,5 +15,16 @@
       "immediately": true
     }
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wqy-cell/dsh-task-flow"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "task-flow",
+    "todo"
+  ],
   "license": "MIT"
 }

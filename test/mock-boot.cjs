@@ -1,11 +1,14 @@
 // dsh-task-flow 客户端 bundle 的本地模拟测试：
 // 模拟 DSH 客户端环境（模块加载器 + 最小 ctx + react/react-dom 真实包），
 // 完整走一遍 物化 → apply → 插槽声明 → 按钮/面板渲染 + 流程状态机逻辑。
+// 依赖解析：优先环境变量 DSH_TEST_NODE_MODULES，其次 DSH_HOME，最后 ~/.dsh。
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const vm = require("vm");
 
-const NODE_MODULES = "C:/Users/wqy20/.dsh/profiles/node_modules";
+const NODE_MODULES = process.env.DSH_TEST_NODE_MODULES
+  || path.join(process.env.DSH_HOME || path.join(os.homedir(), ".dsh"), "profiles", "node_modules");
 const BUNDLE = path.resolve(__dirname, "../lib/client.js");
 
 let failures = 0;
@@ -249,23 +252,40 @@ try {
 
 try {
   const html = render(T.components.PanelContent, { onClose: () => {} });
-  check("面板渲染不抛异常", true, "len=" + html.length);
+  check("面板渲染不抛异常（默认星图视图）", true, "len=" + html.length);
   check("面板含「任务星图」标题", html.includes("任务星图"));
   check("含进度 1/7", html.includes("1/7"));
   check("当前节点标「当前」", html.includes("tf-here") && html.includes("当前"));
   check("头部含流程切换下拉", html.includes("tf-flow-select"));
-  check("头部不含旧 chips 行", !html.includes("tf-chips"));
+  check("头部含视图切换与编辑按钮", html.includes("tf-view-toggle") && html.includes("tf-view-btn"));
   check("含 3 张分支卡牌（干货教程/观点评论/故事叙事）", html.includes("干货教程") && html.includes("观点评论") && html.includes("故事叙事"));
   check("分支卡含「⚡ 下达」指令按钮", html.includes("tf-branch-cmd") && html.includes("⚡ 下达"));
   check("含「如何继续」详情", html.includes("如何继续"));
-  check("迷你星图导航存在", html.includes("tf-map"));
+  check("SVG 星图视图存在", html.includes("tf-mapwrap") && html.includes("tf-map-svg") && html.includes("tf-mnode"));
+  check("星图连线带流光", html.includes("tf-medge lit pulse"), "edge class 存在");
   check("英雄详情卡存在", html.includes("tf-hero"));
   check("英雄卡含大花图标", html.includes("tf-hero-icon"));
   check("头部步骤点串存在", html.includes("tf-progress-dots"));
   check("英雄卡含水印序号", html.includes("tf-hero-watermark"));
-  check("迷你星图含折叠开关", html.includes("tf-map-toggle"));
   check("页脚含「🐋 鲸鱼让位」", html.includes("鲸鱼让位"));
-  check("n1→n2 段亮起且带流光", html.includes("tf-seg lit pulse"), "seg class 存在");
+
+  // 列表视图（旧版迷你星图）
+  const htmlList = render(T.components.PanelContent, { onClose: () => {}, initialView: "list" });
+  check("列表视图：迷你星图导航存在", htmlList.includes("tf-map") && htmlList.includes("tf-map-toggle"));
+  check("列表视图：段亮起且带流光", htmlList.includes("tf-seg lit pulse"));
+
+  // 编辑模式（无选中节点 → 引导页）
+  const htmlEdit = render(T.components.PanelContent, { onClose: () => {}, initialEditing: true });
+  check("编辑模式引导页存在", htmlEdit.includes("tf-editguide") && htmlEdit.includes("编辑模式"));
+
+  // 空流程 → 添加第一个步骤
+  const SEmpty = T.getStore();
+  SEmpty.flows = [{ id: "empty", title: "空流程", theme: "sakura", createdAt: Date.now(), nodes: [], history: [] }];
+  SEmpty.activeFlowId = "empty";
+  const htmlEmpty = render(T.components.PanelContent, { onClose: () => {} });
+  check("空流程含「添加第一个步骤」", htmlEmpty.includes("添加第一个步骤"));
+  SEmpty.flows = [flow];
+  SEmpty.activeFlowId = flow.id;
 } catch (e) { check("面板渲染", false, e.stack); }
 
 // 完成全部流程后的面板
@@ -296,6 +316,43 @@ try {
   } catch (e) { check("进度星图渲染", false, e.stack); }
 }
 
+/* ---------- 场景 5.5：P2 星图布局与编辑操作 ---------- */
+console.log("场景 5.5：P2 布局与编辑器");
+flow = resetStore();
+const lp = T.layoutFlow(flow);
+check("布局覆盖全部 7 节点", Object.keys(lp).length === 7, "len=" + Object.keys(lp).length);
+check("同层分支同列（x 相同）", lp["n3a"].x === lp["n3b"].x && lp["n3b"].x === lp["n3c"].x, lp["n3a"].x + "," + lp["n3c"].x);
+check("列随深度递增", lp["n2"].x > lp["n1"].x && lp["n4"].x > lp["n3a"].x && lp["n5"].x > lp["n4"].x);
+const edP2 = T.edgesOf(flow);
+check("边数量 8（含 3 条分支）", edP2.length === 8, "len=" + edP2.length);
+check("边指向有效节点", edP2.every((e) => lp[e.from] && lp[e.to]));
+
+const nNew = T.newFlowNode(flow, 100, 100);
+check("新建节点 id 唯一", flow.nodes.filter((x) => x.id === nNew.id).length === 1);
+check("自定义 pos 生效于布局", T.layoutFlow(flow)[nNew.id].x === 100 && T.layoutFlow(flow)[nNew.id].y === 100);
+T.updateFlowNode(flow, nNew.id, { title: "改名了", est: "5 分钟", tags: ["a", "b"] });
+check("更新节点字段", flow.nodes.find((x) => x.id === nNew.id).title === "改名了");
+T.moveFlowNode(flow, nNew.id, 222, 333);
+check("拖动节点更新位置", T.layoutFlow(flow)[nNew.id].x === 222 && T.layoutFlow(flow)[nNew.id].y === 333);
+T.deleteFlowNode(flow, "n2");
+check("删除节点及其连线", !flow.nodes.some((x) => x.id === "n2") && flow.nodes.find((x) => x.id === "n1").next === null);
+check("删除后边列表清理", T.edgesOf(flow).every((e) => e.from !== "n2" && e.to !== "n2"));
+
+// EditorForm SSR（分支节点 / 普通节点）
+flow = resetStore();
+try {
+  const htmlChoice = render(T.components.EditorForm, {
+    flow: flow, node: flow.nodes.find((x) => x.id === "n2"),
+    onUpdate: () => {}, onDelete: () => {}
+  });
+  check("编辑器（分支节点）含分支编辑区", htmlChoice.includes("分支选项") && htmlChoice.includes("加分支") && htmlChoice.includes("编辑节点"));
+  const htmlTask = render(T.components.EditorForm, {
+    flow: flow, node: flow.nodes.find((x) => x.id === "n1"),
+    onUpdate: () => {}, onDelete: () => {}
+  });
+  check("编辑器（普通节点）含下一步选择", htmlTask.includes("下一步") && htmlTask.includes("（终点）"));
+} catch (e) { check("编辑器渲染", false, e.stack); }
+
 /* ---------- 场景 6：拖拽边界 ---------- */
 console.log("场景 6：拖拽边界（clampPanel）");
 const c1 = T.clampPanel(500, 400, 700, 500, 1200, 800);
@@ -304,6 +361,12 @@ const c2 = T.clampPanel(-999, -999, 700, 500, 1200, 800);
 check("左上越界夹紧（至少保留 60px 可见）", c2.x === 60 - 700 && c2.y === 60 - 500, c2.x + "," + c2.y);
 const c3 = T.clampPanel(9999, 9999, 700, 500, 1200, 800);
 check("右下越界夹紧", c3.x === 1200 - 60 && c3.y === 800 - 60, c3.x + "," + c3.y);
+const rs1 = T.clampResize(900, 600, 1200, 800);
+check("常规尺寸不夹紧", rs1.w === 900 && rs1.h === 600);
+const rs2 = T.clampResize(100, 100, 1200, 800);
+check("过小尺寸抬到最小", rs2.w === 560 && rs2.h === 420, rs2.w + "x" + rs2.h);
+const rs3 = T.clampResize(9999, 9999, 1200, 800);
+check("过大尺寸收到视口内", rs3.w === 1176 && rs3.h === 776, rs3.w + "x" + rs3.h);
 
 /* ---------- 场景 7：向 DSH 下达指令（无会话服务时优雅失败） ---------- */
 console.log("场景 7：向 DSH 下达指令");
