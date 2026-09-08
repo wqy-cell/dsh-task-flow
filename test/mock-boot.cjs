@@ -393,6 +393,45 @@ check("空 nodes → 拒绝落库", badAi.ok === false);
 const warnAi = T.aiApplyHostFlow({ flow: { id: "ai-2", title: "W", nodes: [{ id: "w1", title: "一" }] }, warnings: ["已自动修正"] });
 check("warnings 透传", warnAi.ok === true && warnAi.warnings.length === 1);
 
+/* ---------- 场景 5.7：S2 星图视图（暗虚线 / 生长动画 / 100 节点性能） ---------- */
+console.log("场景 5.7：星图视图补差与性能");
+{
+  const srcCss = fs.readFileSync(BUNDLE, "utf8");
+  check("未走边为暗虚线（stroke-dasharray）", /\.tf-medge\s*\{[^}]*stroke-dasharray:\s*3\s*5/.test(srcCss));
+  check("已走边为亮实线（dasharray none）", /\.tf-medge\.lit\s*\{[^}]*stroke-dasharray:\s*none/.test(srcCss));
+}
+{
+  const demoFlow = resetStore();
+  const demoSt = T.replay(demoFlow);
+  const growSeq = new Map([["n1", 0], ["n2", 1]]);
+  try {
+    const htmlGrow = render(T.components.MapView, {
+      flow: demoFlow, st: demoSt, unchosen: T.unchosenSet(demoFlow, demoSt.chosen),
+      selectedId: null, previewTo: null, editing: false, growSeq: growSeq,
+      onSelect: () => {}, onAddNode: () => {}, onMoveNode: () => {}, onContextMenu: () => {}
+    });
+    const growOk = /tf-mnode [a-z]+ grow/.test(htmlGrow) && htmlGrow.includes("animation-delay:120ms");
+    check("生长态节点带 grow 类与动画延迟", growOk, growOk ? "" : htmlGrow.match(/tf-mnode[^>]{0,80}/g).slice(0, 3).join(" | "));
+  } catch (e) { check("生长态 MapView 渲染", false, e.stack); }
+}
+{
+  // 100 节点链：布局 + SSR 渲染性能（阈值 2s，宽松防 CI 抖动）
+  const perfNodes = [];
+  for (let i = 1; i <= 100; i++) perfNodes.push({ id: "x" + i, kind: "task", title: "步骤 " + i, next: i < 100 ? "x" + (i + 1) : null });
+  const perfFlow = { id: "perf", title: "压测", theme: "sakura", createdAt: Date.now(), nodes: perfNodes, history: [] };
+  const perfSt = T.replay(perfFlow);
+  const t0 = Date.now();
+  const lp = T.layoutFlow(perfFlow);
+  const htmlPerf = render(T.components.MapView, {
+    flow: perfFlow, st: perfSt, unchosen: new Set(), selectedId: null, previewTo: null, editing: false, growSeq: null,
+    onSelect: () => {}, onAddNode: () => {}, onMoveNode: () => {}, onContextMenu: () => {}
+  });
+  const ms = Date.now() - t0;
+  check("100 节点布局覆盖全部", Object.keys(lp).length === 100);
+  check("100 节点 SSR 渲染全部节点", (htmlPerf.match(/tf-mnode /g) || []).length >= 100);
+  check("100 节点布局+渲染 < 2000ms", ms < 2000, ms + "ms");
+}
+
 /* ---------- 场景 6：拖拽边界 ---------- */
 console.log("场景 6：拖拽边界（clampPanel）");
 const c1 = T.clampPanel(500, 400, 700, 500, 1200, 800);
