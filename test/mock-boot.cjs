@@ -121,6 +121,9 @@ localStorageMock.setItem("dsh-task-flow:v1", JSON.stringify({ v: 1, activeFlowId
 T.reloadStore();
 check("迁移后含 progress 流程", T.getStore().flows.some((f) => f.id === "progress"));
 check("迁移后 progress 为当前流程", T.getStore().activeFlowId === "progress");
+check("迁移写入 v2 并备份 v1、删除 v1", localStorageMock.getItem(T.STORE_KEY()) !== null && localStorageMock.getItem(T.STORE_KEY_BACKUP()) !== null && localStorageMock.getItem(T.STORE_KEY_V1()) === null);
+const v2store = JSON.parse(localStorageMock.getItem(T.STORE_KEY()));
+check("v2 数据带 schema/exec/source 缺省", v2store.v === 2 && v2store.flows[0].schema === 2 && v2store.flows[0].nodes[0].exec.mode === "manual" && v2store.flows[0].history[0].source === "user");
 const progCount = T.getStore().flows.filter((f) => f.id === "progress").length;
 T.reloadStore();
 check("再次加载幂等（不重复添加）", T.getStore().flows.filter((f) => f.id === "progress").length === progCount);
@@ -352,6 +355,43 @@ try {
   });
   check("编辑器（普通节点）含下一步选择", htmlTask.includes("下一步") && htmlTask.includes("（终点）"));
 } catch (e) { check("编辑器渲染", false, e.stack); }
+
+/* ---------- 场景 5.6：P3 S1 AI 拆解面板与落库 ---------- */
+console.log("场景 5.6：AI 面板与落库");
+flow = resetStore();
+try {
+  const htmlAi = render(T.components.PanelContent, { onClose: () => {} });
+  check("AI 条渲染（输入框+生成按钮）", htmlAi.includes("tf-ai-bar") && htmlAi.includes("tf-ai-input") && htmlAi.includes("tf-ai-btn"));
+  check("占位文案「星图自己长出来」", htmlAi.includes("星图自己长出来"));
+  check("生成按钮文案「✨ 生成」", htmlAi.includes("✨ 生成"));
+} catch (e) { check("AI 条渲染", false, e.stack); }
+
+const beforeCount = T.getStore().flows.length;
+const aiRes = T.aiApplyHostFlow({
+  flow: {
+    id: "ai-1", title: "AI 流程", createdAt: Date.now(), schema: 2,
+    meta: { origin: "ai", planPrompt: "test" },
+    nodes: [
+      { id: "a1", kind: "task", title: "甲", how: "h", est: "e" },
+      { id: "a2", kind: "choice", title: "选", branches: [{ label: "左", to: "a3" }, { label: "右", to: "a3" }] },
+      { id: "a3", kind: "milestone", title: "✅ 产出" }
+    ]
+  },
+  warnings: []
+});
+check("AI 落库成功且成为当前流程", aiRes.ok === true && T.getStore().flows.length === beforeCount + 1 && T.getStore().activeFlowId === "ai-1");
+const aiFlow = T.getStore().flows[T.getStore().flows.length - 1];
+check("AI 流程 schema=2 / meta.origin=ai", aiFlow.schema === 2 && aiFlow.meta.origin === "ai");
+check("节点补 exec 缺省（agent 模式）", aiFlow.nodes.every((n) => n.exec && n.exec.mode === "agent"));
+check("生长序列覆盖全部节点", aiRes.growSeq.size === 3 && aiRes.growSeq.get("a2") === 1);
+const snap = JSON.parse(aiRes.snapshot);
+T.getStore().flows = snap.flows;
+T.getStore().activeFlowId = snap.activeFlowId;
+check("快照撤销恢复原状", T.getStore().flows.length === beforeCount && T.getStore().activeFlowId === "demo");
+const badAi = T.aiApplyHostFlow({ flow: { id: "x", title: "y", nodes: [] } });
+check("空 nodes → 拒绝落库", badAi.ok === false);
+const warnAi = T.aiApplyHostFlow({ flow: { id: "ai-2", title: "W", nodes: [{ id: "w1", title: "一" }] }, warnings: ["已自动修正"] });
+check("warnings 透传", warnAi.ok === true && warnAi.warnings.length === 1);
 
 /* ---------- 场景 6：拖拽边界 ---------- */
 console.log("场景 6：拖拽边界（clampPanel）");

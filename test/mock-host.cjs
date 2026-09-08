@@ -182,6 +182,20 @@ const VALID_PLAN = JSON.stringify({
   const r9b = await call(env9b.captured, "http://x/task-flow/ai-plan", "POST", JSON.stringify({ goal: "test" }));
   check("流抛错 → 502 模型调用失败", r9b.status === 502 && /模型调用失败/.test(json(r9b).error));
 
+  console.log("场景 10：非法 JSON 十连发（无脏数据、无崩溃）");
+  const badTexts = [
+    "这不是 JSON", "```json\n{broken", "<html>页面</html>", "{\"title\":", "[1,2,3]",
+    "{\"title\":\"x\",\"nodes\":{}}", "{\"title\":\"x\",\"nodes\":[{\"id\":\"a\"}]}", "null", "12345", ""
+  ];
+  const env10 = makeCtx(badTexts.slice(0, 5).concat(badTexts.slice(0, 5).map((t) => t + " 再错")));
+  mod.apply(env10.ctx);
+  let allHandled = true;
+  for (let i = 0; i < 10; i++) {
+    const r = await call(env10.captured, "http://x/task-flow/ai-plan", "POST", JSON.stringify({ goal: "test" }));
+    if (r.status !== 502) { allHandled = false; console.log("    第 " + (i + 1) + " 次返回 status=" + r.status); }
+  }
+  check("十连发全部 502（无崩溃无脏数据）", allHandled && env10.calls.length === 20);
+
   console.log(failures === 0 ? "== host 全部通过 ==" : "== host 有 " + failures + " 项失败 ==");
   process.exit(failures === 0 ? 0 : 1);
 })().catch((e) => { console.error("FATAL", e); process.exit(1); });
