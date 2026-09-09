@@ -432,6 +432,90 @@ console.log("场景 5.7：星图视图补差与性能");
   check("100 节点布局+渲染 < 2000ms", ms < 2000, ms + "ms");
 }
 
+/* ---------- 场景 5.8：S3 执行流（工具观测 + Agent 写进度） ---------- */
+console.log("场景 5.8：执行流与 Agent 写进度");
+{
+  check("execTargetOf 提取 pwsh 命令", T.execTargetOf("pwsh", '{"command":"npm run build"}') === "npm run build");
+  check("execTargetOf 提取 read 路径", T.execTargetOf("read", '{"file_path":"C:/x/y.js"}') === "C:/x/y.js");
+  check("execTargetOf 提取搜索词", T.execTargetOf("web_search", '{"query":"AI 插件"}') === "AI 插件");
+  check("execTargetOf 坏参数返回空", T.execTargetOf("read", "not-json{{") === "");
+  check("execTargetOf 长目标截断 40", T.execTargetOf("pwsh", JSON.stringify({ command: "x".repeat(80) })).length === 41);
+  T.execHandleCall({ data: { callId: "c1", name: "pwsh", arguments: '{"command":"npm run build"}' }, time: 1000 });
+  let snap = T.execSnapshot();
+  check("call → running 且 active=1", snap.active === 1 && snap.runs[0].status === "running");
+  T.execHandleResult({ data: { message: { source: { callId: "c1" }, content: [{ type: "text", content: "ok" }] } }, time: 2000 });
+  snap = T.execSnapshot();
+  check("result → done 且 doneAt 记录", snap.runs[0].status === "done" && snap.runs[0].doneAt === 2000 && snap.done === 1);
+  T.execHandleCall({ data: { callId: "c2", name: "bash", arguments: "{}" }, time: 3000 });
+  T.execHandleResult({ data: { message: { source: { callId: "c2" }, content: [{ type: "tool-result", content: "boom", isError: true }] } }, time: 4000 });
+  snap = T.execSnapshot();
+  check("错误结果 → failed 且带 error", snap.runs[1].status === "failed" && /boom/.test(snap.runs[1].error || ""));
+  for (let i = 0; i < 250; i++) T.execHandleCall({ data: { callId: "cap-" + i, name: "read", arguments: "{}" }, time: i });
+  snap = T.execSnapshot();
+  check("执行流环形缓冲 ≤200", snap.runs.length <= 200 && snap.runs.length === 200);
+}
+{
+  // Agent advance 事件应用（dedup / 未知流程不消费 / complete+skip 推进 / fail 只记录）
+  const S = T.getStore();
+  const f = {
+    id: "f-agent", title: "Agent 测试", theme: "sakura", createdAt: Date.now(),
+    nodes: [
+      { id: "a1", kind: "task", title: "一", next: "a2" },
+      { id: "a2", kind: "task", title: "二", next: "a3" },
+      { id: "a3", kind: "task", title: "三" }
+    ],
+    history: []
+  };
+  S.flows = [f];
+  S.activeFlowId = "f-agent";
+  const evs = [
+    { seq: 1, flowId: "f-agent", nodeId: "a1", action: "complete", note: "已选好" },
+    { seq: 2, flowId: "f-agent", nodeId: "a2", action: "complete", note: "" },
+    { seq: 3, flowId: "unknown-flow", nodeId: "a1", action: "complete", note: "" },
+    { seq: 4, flowId: "f-agent", nodeId: "a3", action: "skip", note: "跳过" },
+    { seq: 5, flowId: "f-agent", nodeId: "a3", action: "fail", note: "接口挂了" }
+  ];
+  const r1 = T.applyAgentEventsToStore(evs);
+  check("Agent 事件应用 3 条（complete×2 + skip×1）", r1.applied === 3, "applied=" + r1.applied);
+  check("history 带 source=agent 与 note", f.history.some((e) => e.source === "agent" && e.note === "已选好"));
+  const stNow = T.replay(f);
+  check("a1/a2 已完成、a3 已跳过", stNow.done.has("a1") && stNow.done.has("a2") && stNow.skipped.has("a3"), "active=" + stNow.active);
+  const r2 = T.applyAgentEventsToStore(evs);
+  check("重复事件不重复应用（dedup）", r2.applied === 0);
+  const r3 = T.applyAgentEventsToStore([{ seq: 3, flowId: "unknown-flow", nodeId: "a1", action: "complete" }]);
+  check("未知流程事件不消费", r3.applied === 0);
+  const snapFail = T.execSnapshot();
+  check("fail 事件进执行流侧栏", snapFail.runs.some((r) => r.callId === "agent-5" && r.status === "failed" && /接口挂了/.test(r.error || "")));
+}
+{
+  // registerExecFlow：有 conversationEvents 时注册成功并可驱动；无则静默
+  const defs = [];
+  const ctxExec = { conversationEvents: { register: (d) => { defs.push(d); } } };
+  T.registerExecFlow(ctxExec);
+  check("定义注册成功（kind/target 正确）", defs.length === 1 && defs[0].kind === "task-flow-exec" && defs[0].target === "task-flow");
+  const def = defs[0];
+  const m1 = def.match({ type: "tool/call", data: { callId: "z1" } });
+  const m2 = def.match({ type: "tool/result", data: { message: { source: { callId: "z1" } } } });
+  check("match 返回 start/update 角色", m1 && m1.role === "start" && m2 && m2.role === "update");
+  def.start({}, { event: { type: "tool/call", data: { callId: "z1", name: "read", arguments: '{"file_path":"a.txt"}' }, time: 5000 }, id: "z1" });
+  const snapStart = T.execSnapshot();
+  check("start 回调驱动执行流", snapStart.runs.some((r) => r.callId === "z1" && r.status === "running" && r.target === "a.txt"));
+  def.update({ state: {} }, { event: { type: "tool/result", data: { message: { source: { callId: "z1" }, content: [{ type: "text", content: "ok" }] } }, time: 6000 } });
+  const snapUpd = T.execSnapshot();
+  check("update 回调完结执行流", snapUpd.runs.some((r) => r.callId === "z1" && r.status === "done"));
+}
+{
+  // SSR：执行流条 + 徽标
+  flow = resetStore();
+  try {
+    const htmlExec = render(T.components.PanelContent, { onClose: () => {} });
+    check("面板含执行流条（tf-exec-bar）", htmlExec.includes("tf-exec-bar") && htmlExec.includes("执行流"));
+  } catch (e) { check("执行流条渲染", false, e.stack); }
+  const snapBadge = T.execSnapshot();
+  const badgeHtml = render(T.components.SidebarButton, { wide: true });
+  check("有动作时侧边栏显示计数徽标", snapBadge.done > 0 && badgeHtml.includes("tf-exec-badge"), "done=" + snapBadge.done);
+}
+
 /* ---------- 场景 6：拖拽边界 ---------- */
 console.log("场景 6：拖拽边界（clampPanel）");
 const c1 = T.clampPanel(500, 400, 700, 500, 1200, 800);

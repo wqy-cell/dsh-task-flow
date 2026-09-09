@@ -196,6 +196,34 @@ const VALID_PLAN = JSON.stringify({
   }
   check("十连发全部 502（无崩溃无脏数据）", allHandled && env10.calls.length === 20);
 
+  console.log("场景 11：advance / events / state（Agent 进度总线）");
+  const env11 = makeCtx([VALID_PLAN]);
+  mod.apply(env11.ctx);
+  const r11a = await call(env11.captured, "http://x/task-flow/advance", "GET");
+  check("缺 flow/node → 400", r11a.status === 400);
+  const r11b = await call(env11.captured, "http://x/task-flow/advance?flow=f1&node=n1&action=boom", "GET");
+  check("非法 action → 400", r11b.status === 400);
+  const r11c = await call(env11.captured, "http://x/task-flow/advance?flow=f1&node=n1&action=complete&note=" + "x".repeat(201), "GET");
+  check("note 超长 → 400", r11c.status === 400);
+  const r11d = await call(env11.captured, "http://x/task-flow/advance?flow=f1&node=n1&action=complete&note=ok", "GET");
+  check("合法 complete → 200 且返回 seq", r11d.status === 200 && json(r11d).ok === true && typeof json(r11d).seq === "number");
+  await call(env11.captured, "http://x/task-flow/advance?flow=f1&node=n2&action=skip", "GET");
+  await call(env11.captured, "http://x/task-flow/advance?flow=f1&node=n3&action=fail&note=boom", "GET");
+  const r11g = await call(env11.captured, "http://x/task-flow/events?since=0", "GET");
+  check("events 返回全部 3 条", json(r11g).events.length === 3 && json(r11g).lastSeq === 3);
+  check("events 字段完整（action/note/at）", json(r11g).events[2].action === "fail" && json(r11g).events[2].note === "boom" && typeof json(r11g).events[2].at === "number");
+  const r11h = await call(env11.captured, "http://x/task-flow/events?since=2", "GET");
+  check("since 增量只返回第 3 条", json(r11h).events.length === 1 && json(r11h).events[0].seq === 3);
+  const r11i = await call(env11.captured, "http://x/task-flow/state", "GET");
+  check("state 返回计数", json(r11i).count === 3 && json(r11i).events.length === 3);
+  for (let i = 0; i < 520; i++) await call(env11.captured, "http://x/task-flow/advance?flow=f9&node=n9&action=skip", "GET");
+  const r11j = await call(env11.captured, "http://x/task-flow/state", "GET");
+  check("事件缓冲封顶 500", json(r11j).count === 500, "count=" + json(r11j).count);
+  const r11k = await call(env11.captured, "http://x/task-flow/advance?flow=f1&node=n1&action=complete", "POST");
+  check("POST advance → 405", r11k.status === 405);
+  const r11l = await call(env11.captured, "http://x/task-flow/ai-plan", "POST", JSON.stringify({ goal: "x" }));
+  check("协作协议已写入拆解 system prompt", r11l.status === 200 && env11.calls.length === 1 && /协作协议/.test(env11.calls[0].system) && /task-flow\/advance/.test(env11.calls[0].system), "ai-plan status=" + r11l.status);
+
   console.log(failures === 0 ? "== host 全部通过 ==" : "== host 有 " + failures + " 项失败 ==");
   process.exit(failures === 0 ? 0 : 1);
 })().catch((e) => { console.error("FATAL", e); process.exit(1); });
