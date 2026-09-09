@@ -25,21 +25,29 @@ const GITDIR = path.join(ROOT, ".git");
 function log(...a) { console.log("[push]", ...a); }
 
 async function api(method, p, body) {
-  const res = await fetch(API + p, {
-    method,
-    headers: {
-      authorization: "Bearer " + TOKEN,
-      accept: "application/vnd.github+json",
-      "user-agent": "dsh-task-flow-release",
-      ...(body !== undefined ? { "content-type": "application/json" } : {})
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined
-  });
-  const text = await res.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
-  if (!res.ok) throw new Error(`${method} ${p} -> ${res.status} ${text.slice(0, 200)}`);
-  return data;
+  log("    api", method, p.slice(0, 72));
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error("api 超时 60s: " + p)), 60000);
+  try {
+    const res = await fetch(API + p, {
+      method,
+      headers: {
+        authorization: "Bearer " + TOKEN,
+        accept: "application/vnd.github+json",
+        "user-agent": "dsh-task-flow-release",
+        ...(body !== undefined ? { "content-type": "application/json" } : {})
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal
+    });
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+    if (!res.ok) throw new Error(`${method} ${p} -> ${res.status} ${text.slice(0, 200)}`);
+    return data;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /* ---------- 松散对象读取 ---------- */
@@ -157,9 +165,11 @@ async function main() {
     const parentLocal = c.parents[0];
     const parentRemote = apiSha.get(parentLocal);
     if (!parentRemote) throw new Error("父提交不在 GitHub 上：" + parentLocal.slice(0, 10));
+    log("→ 处理", c.sha.slice(0, 10), c.message.split("\n")[0].slice(0, 40));
 
-    // 1) 上传本提交新增的 blob
-    const changes = treeChanges(parentLocal, c.tree);
+    // 1) 上传本提交新增的 blob（注意：treeChanges 需要父提交的 TREE sha，不是 commit sha）
+    const parentLocalCommit = parseCommit(parentLocal);
+    const changes = treeChanges(parentLocalCommit.tree, c.tree);
     const createdBlobs = new Set();
     for (const ch of changes) {
       if (ch.sha === null) continue;
@@ -171,7 +181,9 @@ async function main() {
         content: content.toString("base64"),
         encoding: "base64"
       });
+      log("    blob", ch.sha.slice(0, 10), ch.path, Math.round(content.length / 1024) + "KB");
     }
+    if (changes.some((ch) => ch.sha === null)) log("    删除", changes.filter((ch) => ch.sha === null).map((ch) => ch.path).join(", "));
 
     // 2) 基于父树构建新树（只提交变更路径；父树 sha 从 GitHub 读取，避免依赖本地对象）
     const parentRemoteCommit = await api("GET", `/repos/${OWNER}/${REPO}/git/commits/${parentRemote}`);
