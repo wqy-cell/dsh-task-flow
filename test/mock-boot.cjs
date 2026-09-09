@@ -543,5 +543,59 @@ check("鲸鱼让位成功且写入锚点记忆", rw.ok === true && localStorageM
 const pos8 = JSON.parse(localStorageMock.getItem("dshw-pos") || "{}");
 check("锚点为右下角", pos8.hAnchor === "right" && pos8.vAnchor === "bottom" && pos8.v === 2, JSON.stringify(pos8));
 
-console.log(failures === 0 ? "== 全部通过 ==" : "== 有 " + failures + " 项失败 ==");
-process.exit(failures === 0 ? 0 : 1);
+/* ---------- 场景 9：S4 Goal 主线联动 ---------- */
+console.log("场景 9：Goal 主线联动");
+{
+  let faceSnapshot = { goal: { id: "g1", revision: 2, objective: "把插件发布到市场", phase: "active", maxGoalRounds: 10, roundsStarted: 3 } };
+  const goalListeners = new Set();
+  const face = {
+    getSnapshot: () => faceSnapshot,
+    subscribe: (fn) => { goalListeners.add(fn); return () => goalListeners.delete(fn); }
+  };
+  T.setGoalFace(() => face);
+
+  let htmlGoal = render(T.components.GoalStar, {});
+  check("主线星：进行中 + 目标 + 轮次", htmlGoal.includes("tf-goal-star active") && htmlGoal.includes("把插件发布到市场") && htmlGoal.includes("第 3/10 轮"));
+
+  faceSnapshot = { goal: { id: "g1", revision: 2, objective: "x", phase: "blocked", maxGoalRounds: 10, roundsStarted: 5, blockedReason: { code: "sandbox", message: "权限不足" } } };
+  htmlGoal = render(T.components.GoalStar, {});
+  check("主线星：受阻 + 原因可见", htmlGoal.includes("tf-goal-star blocked") && htmlGoal.includes("受阻原因：权限不足"));
+
+  flow = resetStore();
+  const htmlPanel = render(T.components.PanelContent, { onClose: () => {} });
+  check("受阻时主体加红警示类", htmlPanel.includes("tf-body-goal-blocked"));
+
+  faceSnapshot = { goal: { id: "g1", revision: 3, objective: "x", phase: "complete", maxGoalRounds: 10, roundsStarted: 10 } };
+  htmlGoal = render(T.components.GoalStar, {});
+  check("主线星：完成 + 奖杯", htmlGoal.includes("tf-goal-star complete") && htmlGoal.includes("🏆"));
+
+  faceSnapshot = {};
+  htmlGoal = render(T.components.GoalStar, {});
+  check("无主线目标 → /goal 引导", htmlGoal.includes("tf-goal-star none") && htmlGoal.includes("/goal"));
+
+  // 异步：goalMutate 成功路径（apply 捕获 sessions + remote，在 .then 里统一收尾）
+  faceSnapshot = { goal: { id: "g1", revision: 2, objective: "x", phase: "active", maxGoalRounds: 10, roundsStarted: 3 } };
+  const goalCalls = [];
+  const ctxG = {
+    sessions: {
+      list: { getSnapshot: () => ({ current: "s1" }) },
+      binding: () => ({ session: { projections: { faceOf: (k) => (k === "goal" ? face : null) } } })
+    },
+    remote: { goals: { pause: (sid, ref) => { goalCalls.push(["pause", sid, ref]); return { goal: { phase: "paused" } }; } } },
+    effect: (fn) => { try { fn(); } catch (e) { /* ignore */ } },
+    slots: { inject: () => {} }
+  };
+  pluginModule.apply(ctxG);
+  T.goalMutate("pause").then(
+    () => {
+      check("goalMutate pause 携带会话与引用", goalCalls.length === 1 && goalCalls[0][0] === "pause" && goalCalls[0][1] === "s1" && goalCalls[0][2].id === "g1" && goalCalls[0][2].revision === 2);
+      finish();
+    },
+    (e) => { check("goalMutate 成功路径", false, String((e && e.message) || e)); finish(); }
+  );
+}
+
+function finish() {
+  console.log(failures === 0 ? "== 全部通过 ==" : "== 有 " + failures + " 项失败 ==");
+  process.exit(failures === 0 ? 0 : 1);
+}
