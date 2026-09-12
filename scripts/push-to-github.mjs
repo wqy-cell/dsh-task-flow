@@ -139,16 +139,20 @@ async function main() {
   const refData = await api("GET", `/repos/${OWNER}/${REPO}/git/ref/heads/${BRANCH}`).catch(() => null);
   const boundary = refData && refData.object && refData.object.sha ? refData.object.sha : null;
   if (!boundary) throw new Error("GitHub 上的 main 不存在或读取失败");
-  log("GitHub main =", boundary.slice(0, 10), "· 本地 HEAD =", headSha.slice(0, 10));
+  const boundaryCommit = await api("GET", `/repos/${OWNER}/${REPO}/git/commits/${boundary}`);
+  const boundaryTree = boundaryCommit.tree.sha;
+  log("GitHub main =", boundary.slice(0, 10), "· tree =", boundaryTree.slice(0, 10), "· 本地 HEAD =", headSha.slice(0, 10));
   if (boundary === headSha) { log("已是最新，无需推送"); return; }
 
-  // 本地提交链：从 HEAD 走到边界
+  // 本地提交链：从 HEAD 走到边界（支持「内容等价边界」：本地某提交的树与 GitHub 边界树一致即可衔接）
   const chain = [];
+  let contentBoundary = null;
   let cur = headSha;
   while (true) {
     const c = parseCommit(cur);
     chain.push(c);
     if (c.sha === boundary) break;
+    if (c.tree === boundaryTree) { contentBoundary = c.sha; log("内容等价边界:", c.sha.slice(0, 10), c.message.split("\n")[0].slice(0, 40)); break; }
     if (!c.parents.length) throw new Error("本地历史与 GitHub 无共同祖先");
     cur = c.parents[0];
     if (chain.length > 500) throw new Error("提交链过长，放弃");
@@ -158,10 +162,11 @@ async function main() {
 
   const apiSha = new Map();          // 本地 sha → GitHub 已确认 sha（内容一致时应相等）
   apiSha.set(boundary, boundary);
+  if (contentBoundary) apiSha.set(contentBoundary, boundary);
   let mismatches = 0;
 
   for (const c of chain) {
-    if (c.sha === boundary) continue;
+    if (c.sha === boundary || (contentBoundary && c.sha === contentBoundary)) continue;
     const parentLocal = c.parents[0];
     const parentRemote = apiSha.get(parentLocal);
     if (!parentRemote) throw new Error("父提交不在 GitHub 上：" + parentLocal.slice(0, 10));
