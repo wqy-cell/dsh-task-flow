@@ -224,6 +224,20 @@ const VALID_PLAN = JSON.stringify({
   const r11l = await call(env11.captured, "http://x/task-flow/ai-plan", "POST", JSON.stringify({ goal: "x" }));
   check("协作协议已写入拆解 system prompt", r11l.status === 200 && env11.calls.length === 1 && /协作协议/.test(env11.calls[0].system) && /task-flow\/advance/.test(env11.calls[0].system), "ai-plan status=" + r11l.status);
 
+  console.log("场景 12：JSON 截断修复（maxTokens 截断）");
+  const TRUNC = VALID_PLAN.slice(0, VALID_PLAN.indexOf('"n5"') + 22);   // 切在 n5 对象中间
+  const env12 = makeCtx([TRUNC]);
+  mod.apply(env12.ctx);
+  const r12 = await call(env12.captured, "http://x/task-flow/ai-plan", "POST", JSON.stringify({ goal: "test" }));
+  const j12 = json(r12);
+  check("截断输出 → 修复后 200", r12.status === 200 && j12.ok === true, "status=" + r12.status + " err=" + j12.error);
+  check("警告含「已自动修复」", Array.isArray(j12.warnings) && j12.warnings.some((w) => /已自动修复/.test(w)));
+  check("修复后节点数 ≥5", j12.flow && j12.flow.nodes.length >= 5, "nodes=" + (j12.flow && j12.flow.nodes.length));
+  const env12b = makeCtx([JSON.stringify({ title: "x", nodes: [] }), JSON.stringify({ title: "x", nodes: [] })]);
+  mod.apply(env12b.ctx);
+  const r12b = await call(env12b.captured, "http://x/task-flow/ai-plan", "POST", JSON.stringify({ goal: "test" }));
+  check("无法修复（空节点）→ 502", r12b.status === 502);
+
   console.log(failures === 0 ? "== host 全部通过 ==" : "== host 有 " + failures + " 项失败 ==");
   process.exit(failures === 0 ? 0 : 1);
 })().catch((e) => { console.error("FATAL", e); process.exit(1); });
