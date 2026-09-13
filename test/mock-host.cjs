@@ -238,6 +238,93 @@ const VALID_PLAN = JSON.stringify({
   const r12b = await call(env12b.captured, "http://x/task-flow/ai-plan", "POST", JSON.stringify({ goal: "test" }));
   check("无法修复（空节点）→ 502", r12b.status === 502);
 
+  console.log("场景 13：服务端任务库 /task-flow/library（v2.1）");
+  {
+    // 用临时 DSH_HOME，别碰真实任务库
+    const os = require("os");
+    const fs = require("fs");
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-tf-lib-"));
+    process.env.DSH_HOME = tmpHome;
+    check("任务库落在 DSH_HOME/storages 下", mod.libraryFile() === path.join(tmpHome, "storages", "task-flow-library.json"));
+
+    const env13 = makeCtx([]);
+    mod.apply(env13.ctx);
+
+    const r13a = await call(env13.captured, "http://x/task-flow/library", "GET");
+    check("空任务库 → 200 且 0 个任务", r13a.status === 200 && json(r13a).ok === true && json(r13a).count === 0);
+
+    const mkFlow = (id, title, ts, hist) => ({
+      id, title, theme: "sakura", schema: 2, createdAt: ts, updatedAt: ts,
+      meta: { origin: "manual", planPrompt: null },
+      nodes: [{ id: "n1", kind: "task", title: "甲" }],
+      history: new Array(hist || 0).fill(0).map((_, i) => ({ n: "n1", kind: "task", ts: ts + i }))
+    });
+
+    const r13b = await call(env13.captured, "http://x/task-flow/library", "POST", JSON.stringify({ flows: [mkFlow("a", "任务A", 1000)] }));
+    check("写入任务库 → 200 且 count=1", r13b.status === 200 && json(r13b).count === 1);
+    check("落盘文件存在", fs.existsSync(mod.libraryFile()));
+
+    // 第二个窗口推自己的任务：只能做并集，不能把 A 抹掉
+    const r13c = await call(env13.captured, "http://x/task-flow/library", "POST", JSON.stringify({ flows: [mkFlow("b", "任务B", 2000)] }));
+    check("第二个窗口写入后共 2 个任务", r13c.status === 200 && json(r13c).count === 2 && json(r13c).added === 1);
+    const r13d = await call(env13.captured, "http://x/task-flow/library", "GET");
+    check("两个任务都在（旧的没被覆盖）", json(r13d).flows.map((f) => f.id).sort().join(",") === "a,b");
+
+    // 同 id 新版本胜出
+    await call(env13.captured, "http://x/task-flow/library", "POST", JSON.stringify({ flows: [mkFlow("b", "任务B-新", 3000, 2)] }));
+    const r13e = await call(env13.captured, "http://x/task-flow/library", "GET");
+    const bNow = json(r13e).flows.find((f) => f.id === "b");
+    check("同 id 取 updatedAt 更新的一份", bNow.title === "任务B-新" && bNow.history.length === 2);
+
+    // 旧副本（时间更早）不能把新数据顶回去
+    await call(env13.captured, "http://x/task-flow/library", "POST", JSON.stringify({ flows: [mkFlow("b", "任务B-旧", 500)] }));
+    const r13f = await call(env13.captured, "http://x/task-flow/library", "GET");
+    check("陈旧副本不会覆盖新数据", json(r13f).flows.find((f) => f.id === "b").title === "任务B-新");
+
+    // 删除墓碑：删掉的任务不会被别的窗口推回来
+    await call(env13.captured, "http://x/task-flow/library", "POST", JSON.stringify({ flows: [], deleted: { b: 9999 } }));
+    const r13g = await call(env13.captured, "http://x/task-flow/library", "GET");
+    check("墓碑生效：删除的任务不再返回", !json(r13g).flows.some((f) => f.id === "b") && json(r13g).flows.length === 1);
+    await call(env13.captured, "http://x/task-flow/library", "POST", JSON.stringify({ flows: [mkFlow("b", "又推回来", 8000)] }));
+    const r13h = await call(env13.captured, "http://x/task-flow/library", "GET");
+    check("墓碑之后推来的旧副本仍被挡住", !json(r13h).flows.some((f) => f.id === "b"));
+    await call(env13.captured, "http://x/task-flow/library", "POST", JSON.stringify({ flows: [mkFlow("b", "重新建的同名任务", 99999)] }));
+    const r13i = await call(env13.captured, "http://x/task-flow/library", "GET");
+    check("墓碑之后更新的版本可以重新入库", json(r13i).flows.some((f) => f.id === "b" && f.title === "重新建的同名任务"));
+
+    // 参数校验
+    const r13j = await call(env13.captured, "http://x/task-flow/library", "POST", JSON.stringify({ nope: 1 }));
+    check("缺 flows → 400", r13j.status === 400);
+    const r13k = await call(env13.captured, "http://x/task-flow/library", "PUT");
+    check("PUT → 405", r13k.status === 405);
+    const r13l = await call(env13.captured, "http://x/task-flow/library", "POST", JSON.stringify({ flows: null }));
+    check("flows 非数组 → 400", r13l.status === 400);
+
+    // 损坏文件：备份后重来，不锁死任务库
+    fs.mkdirSync(path.dirname(mod.libraryFile()), { recursive: true });
+    fs.writeFileSync(mod.libraryFile(), "{ broken json", "utf8");
+    const r13m = await call(env13.captured, "http://x/task-flow/library", "GET");
+    check("损坏文件 → 200 空库 + error 标记", r13m.status === 200 && json(r13m).count === 0 && json(r13m).error === "corrupt");
+    const corruptBackups = fs.readdirSync(path.dirname(mod.libraryFile())).filter((f) => f.includes(".corrupt-"));
+    check("损坏文件已备份", corruptBackups.length === 1);
+    const r13n = await call(env13.captured, "http://x/task-flow/library", "POST", JSON.stringify({ flows: [mkFlow("c", "任务C", 12345)] }));
+    check("损坏后仍可写入", r13n.status === 200 && json(r13n).count === 1);
+
+    // 字段修复：脏数据不会让接口 500
+    const r13o = await call(env13.captured, "http://x/task-flow/library", "POST", JSON.stringify({
+      flows: [null, 42, { id: "d" }, { id: "e", title: "  ", nodes: "bad", history: [{}] }]
+    }));
+    const d13 = json(r13o);
+    check("脏数据被逐条修复/丢弃（无 500）", r13o.status === 200 && d13.ok === true);
+    const r13p = await call(env13.captured, "http://x/task-flow/library", "GET");
+    const ids13 = json(r13p).flows.map((f) => f.id);
+    check("旧任务保留、脏数据被丢弃（只剩 c/d/e）", ids13.includes("c") && ids13.includes("d") && ids13.includes("e") && ids13.length === 3);
+    check("缺失字段被补齐", json(r13p).flows.every((f) => typeof f.title === "string" && Array.isArray(f.nodes) && Array.isArray(f.history)));
+
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    delete process.env.DSH_HOME;
+  }
+
   console.log(failures === 0 ? "== host 全部通过 ==" : "== host 有 " + failures + " 项失败 ==");
   process.exit(failures === 0 ? 0 : 1);
 })().catch((e) => { console.error("FATAL", e); process.exit(1); });

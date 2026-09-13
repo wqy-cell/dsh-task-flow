@@ -1,3 +1,8 @@
+
+
+
+
+
 // dsh-task-flow 客户端 bundle 的本地模拟测试：
 // 模拟 DSH 客户端环境（模块加载器 + 最小 ctx + react/react-dom 真实包），
 // 完整走一遍 物化 → apply → 插槽声明 → 按钮/面板渲染 + 流程状态机逻辑。
@@ -45,6 +50,18 @@ const windowMock = {
   __ModuleLoader__: { load: (handoff) => { throw new Error("window.__ModuleLoader__.load replaced before bundle run"); } },
   confirm: () => true
 };
+// 跨标签页同步用的最小事件系统（storage 事件）
+const windowListeners = new Map();
+windowMock.addEventListener = (type, fn) => {
+  if (!windowListeners.has(type)) windowListeners.set(type, []);
+  windowListeners.get(type).push(fn);
+};
+windowMock.removeEventListener = (type, fn) => {
+  const list = windowListeners.get(type) || [];
+  const i = list.indexOf(fn);
+  if (i >= 0) list.splice(i, 1);
+};
+windowMock.__dispatch = (type, ev) => { (windowListeners.get(type) || []).slice().forEach((fn) => fn(ev)); };
 let handoff = null;
 windowMock.__ModuleLoader__.load = (h) => { handoff = h; };
 
@@ -94,10 +111,14 @@ check("exports.apply 存在", typeof pluginModule.apply === "function");
 check("exports.inject = ['slots']", Array.isArray(pluginModule.inject) && pluginModule.inject[0] === "slots");
 
 const T = pluginModule.__test;
+/** 复位成「干净的一份示例流程」：内存 + 持久层一起清，模拟刚装好插件的浏览器。 */
 function resetStore() {
+  localStorageMock.removeItem(T.STORE_KEY());
+  localStorageMock.removeItem(T.STORE_KEY_CORRUPT());
   const S = T.getStore();
   S.flows = [T.makeDemoFlow(Date.now())];
   S.activeFlowId = "demo";
+  S.deleted = {};
   return S.flows[0];
 }
 
@@ -488,11 +509,11 @@ console.log("场景 5.8：执行流与 Agent 写进度");
   check("fail 事件进执行流侧栏", snapFail.runs.some((r) => r.callId === "agent-5" && r.status === "failed" && /接口挂了/.test(r.error || "")));
 }
 {
-  // registerExecFlow：有 conversationEvents 时注册成功并可驱动；无则静默
+  // registerExecFlow：有 uiConversation.events 时注册成功并可驱动；无则静默
   const defs = [];
-  const ctxExec = { conversationEvents: { register: (d) => { defs.push(d); } } };
+  const ctxExec = { uiConversation: { events: { register: (d) => { defs.push(d); } } } };
   T.registerExecFlow(ctxExec);
-  check("定义注册成功（kind/target 正确）", defs.length === 1 && defs[0].kind === "task-flow-exec" && defs[0].target === "task-flow");
+  check("定义注册成功（kind 正确，headless 无 target）", defs.length === 1 && defs[0].kind === "task-flow-exec" && defs[0].target === void 0);
   const def = defs[0];
   const m1 = def.match({ type: "tool/call", data: { callId: "z1" } });
   const m2 = def.match({ type: "tool/result", data: { message: { source: { callId: "z1" } } } });
@@ -542,6 +563,119 @@ const rw = T.moveWhaleRight();
 check("鲸鱼让位成功且写入锚点记忆", rw.ok === true && localStorageMock.getItem("dshw-pos") !== null, rw.error);
 const pos8 = JSON.parse(localStorageMock.getItem("dshw-pos") || "{}");
 check("锚点为右下角", pos8.hAnchor === "right" && pos8.vAnchor === "bottom" && pos8.v === 2, JSON.stringify(pos8));
+
+/* ---------- 场景 8.5：任务库健壮性（v2.1 合并写 / 抢救 / 墓碑 / 跨页同步 / 过往任务 UI） ---------- */
+console.log("场景 8.5：任务库健壮性");
+{
+  // 8.5.1 别的窗口（或另一个 profile 的浏览器）写进来的任务，本实例保存后不能消失
+  flow = resetStore();
+  const otherFlow = {
+    id: "tab-b-task", title: "别的窗口建的任务", theme: "sakura",
+    createdAt: Date.now(), updatedAt: Date.now() + 1000, schema: 2,
+    meta: { origin: "manual", planPrompt: null },
+    nodes: [{ id: "n1", kind: "task", title: "甲", next: null, branches: [] }],
+    history: []
+  };
+  localStorageMock.setItem(T.STORE_KEY(), JSON.stringify({ v: 2, activeFlowId: flow.id, flows: [flow, otherFlow] }));
+  T.completeTask(flow, "n1");                       // 本实例保存（内存里根本没有 tab-b-task）
+  check("陈旧副本保存后仍保留别的窗口的任务", T.getStore().flows.some((f) => f.id === "tab-b-task"));
+  check("落盘内容同样包含它", (JSON.parse(localStorageMock.getItem(T.STORE_KEY())).flows || []).some((f) => f.id === "tab-b-task"));
+
+  // 8.5.2 同 id 冲突：updatedAt 更新的胜出（旧副本不能把进度顶回去）
+  const older = { id: "x", title: "旧", nodes: [{ id: "a", title: "a" }], history: [], createdAt: 100, updatedAt: 100 };
+  const newer = { id: "x", title: "新", nodes: [{ id: "a", title: "a" }], history: [{ n: "a" }], createdAt: 100, updatedAt: 200 };
+  const mergedAB = T.mergeFlowLists([older], [newer], {});
+  check("合并同 id 取 updatedAt 更新的一份", mergedAB.length === 1 && mergedAB[0].title === "新");
+  const mergedBA = T.mergeFlowLists([newer], [older], {});
+  check("合并与顺序无关", mergedBA.length === 1 && mergedBA[0].title === "新");
+
+  // 8.5.3 删除留墓碑：不会被合并逻辑或服务器任务库复活
+  check("删除任务成功", T.deleteFlow("tab-b-task").ok === true);
+  T.reloadStore();
+  check("删除后的任务不会复活", !T.getStore().flows.some((f) => f.id === "tab-b-task"));
+  check("不能删掉最后一个任务", (() => {
+    const S = T.getStore();
+    while (S.flows.length > 1) T.deleteFlow(S.flows[S.flows.length - 1].id);
+    return T.deleteFlow(S.flows[0].id).ok === false;
+  })());
+
+  // 8.5.4 残缺 JSON 抢救：坏数据不清空整库
+  const rescued = {
+    id: "rescued", title: "被抢救的任务", theme: "sakura",
+    createdAt: Date.now(), updatedAt: Date.now(), schema: 2,
+    meta: { origin: "manual", planPrompt: null },
+    nodes: [{ id: "n1", kind: "task", title: "甲", next: null, branches: [] }], history: []
+  };
+  localStorageMock.removeItem(T.STORE_KEY_CORRUPT());
+  localStorageMock.setItem(T.STORE_KEY(), '{"v":2,"activeFlowId":"rescued","flows":[' + JSON.stringify(rescued) + ',{"id":"broken","tit');
+  const recovered = T.reloadStore();
+  check("残缺 JSON 能抢救回可用任务", recovered.flows.some((f) => f.id === "rescued"));
+  check("损坏原文已备份", localStorageMock.getItem(T.STORE_KEY_CORRUPT()) !== null);
+
+  // 8.5.5 本地写入失败必须可见（旧版是静默吞掉）
+  const rawSetItem = localStorageMock.setItem;
+  localStorageMock.setItem = () => { const e = new Error("quota"); e.name = "QuotaExceededError"; throw e; };
+  T.saveStore();
+  const err = T.getStorageError();
+  check("本地写入失败给出可见告警", !!err && err.kind === "quota", JSON.stringify(err));
+  localStorageMock.setItem = rawSetItem;
+  T.saveStore();
+  check("恢复正常后告警自动清除", T.getStorageError() === null);
+
+  // 8.5.6 跨标签页同步：storage 事件一到，过往任务立刻出现在本窗口
+  flow = resetStore();
+  const remoteFlow = {
+    id: "remote-task", title: "另一个窗口新建的任务", theme: "sakura",
+    createdAt: Date.now(), updatedAt: Date.now(), schema: 2,
+    meta: { origin: "manual", planPrompt: null },
+    nodes: [{ id: "n1", kind: "task", title: "甲", next: null, branches: [] }], history: []
+  };
+  localStorageMock.setItem(T.STORE_KEY(), JSON.stringify({ v: 2, activeFlowId: flow.id, flows: [flow, remoteFlow] }));
+  windowMock.__dispatch("storage", { key: T.STORE_KEY() });
+  check("storage 事件后立刻能看到别的窗口的任务", T.getStore().flows.some((f) => f.id === "remote-task"));
+  check("跨页同步不改变当前任务", T.getStore().activeFlowId === "demo");
+
+  // 8.5.7 改名 / 切换 / 导出全部
+  check("改名生效", T.renameFlow("remote-task", "改过名的任务").ok === true
+    && T.getStore().flows.find((f) => f.id === "remote-task").title === "改过名的任务");
+  check("空名字被拒绝", T.renameFlow("remote-task", "   ").ok === false);
+  check("切换任务生效", T.switchFlow("remote-task").ok === true && T.getStore().activeFlowId === "remote-task");
+  const payload = JSON.parse(T.libraryPayload());
+  check("导出全部包含所有任务", payload.kind === "dsh-task-flow-library" && payload.flows.length === T.getStore().flows.length);
+
+  // 8.5.8 导入整库 = 合并（不覆盖、不重复）
+  const beforeImp = T.getStore().flows.length;
+  const impRes = T.importLibraryJson({ flows: [Object.assign({}, remoteFlow, { id: "imported-task", title: "导入的任务" })] });
+  check("导入任务库新增任务", impRes.ok === true && T.getStore().flows.length === beforeImp + 1);
+  check("重复导入不产生副本", T.importLibraryJson({ flows: [Object.assign({}, remoteFlow, { id: "imported-task" })] }).ok === false);
+
+  // 8.5.9 排序：当前任务在最前，其余按最近动过
+  const order = T.sortedFlows();
+  check("当前任务排第一", order[0].id === T.getStore().activeFlowId);
+  check("其余按 updatedAt 倒序", (() => {
+    const rest = order.slice(1);
+    for (let i = 1; i < rest.length; i++) if ((rest[i - 1].updatedAt || 0) < (rest[i].updatedAt || 0)) return false;
+    return true;
+  })());
+
+  // 8.5.10 UI：下拉框分「当前任务 / 过往任务」，选项带进度
+  T.switchFlow("demo");
+  const htmlLib = render(T.components.PanelContent, { onClose: () => {} });
+  check("下拉框分「当前任务 / 过往任务」两组", htmlLib.includes("当前任务") && htmlLib.includes("过往任务"));
+  check("下拉选项带进度（done/total）", /当前任务[\s\S]*?\d+\/\d+/.test(htmlLib));
+  check("头部有任务库按钮（tf-lib-btn）", htmlLib.includes("tf-lib-btn"));
+  const libHtml = render(T.components.LibrarySection, {
+    flows: T.sortedFlows(), activeFlowId: T.getStore().activeFlowId,
+    renamingId: null, renameText: "", msg: "测试消息",
+    onOpen() {}, onStartRename() {}, onRenameText() {}, onCommitRename() {}, onCancelRename() {},
+    onExportOne() {}, onDeleteOne() {}, onNew() {}, onExportAll() {}, onImportFile() {}, onPull() {}
+  });
+  check("任务历史列出全部任务", libHtml.includes("过往任务 · 共 " + T.getStore().flows.length + " 个"));
+  check("任务历史含行内操作", libHtml.includes("改名") && libHtml.includes("导出") && libHtml.includes("删除"));
+  check("任务历史含库级操作", libHtml.includes("导出全部") && libHtml.includes("导入任务库"));
+  check("任务历史显示存储状态", /本地|任务库/.test(libHtml));
+  check("任务历史提示当前任务", libHtml.includes("当前"));
+}
 
 /* ---------- 场景 9：S4 Goal 主线联动 ---------- */
 console.log("场景 9：Goal 主线联动");

@@ -23,8 +23,17 @@
 - **🤖 Agent 自动推进**：AI 生成的流程默认「可交给 AI」；Agent 完成任务后可通过 `GET /task-flow/advance` 接口自己推进星图（已通过 system prompt 协作协议告知模型）；你在星图上也能一键「⚡ 交给 AI 执行」
 - **★ 会话主线星**：星图顶部实时显示 DSH Goal 状态（进行中/暂停/受阻/完成 + 第 N/M 轮）；受阻时显示原因、星图当前节点同步染红；可直接从星图暂停/恢复/完成主线目标，完成时全图花瓣雨
 
+### 过往任务与任务库（v2.1）
+
+- **📚 过往任务**：下拉框按「当前任务 / 过往任务（N）」分组、每条带 `已完成/总步数` 与最近使用时间；旁边的 📚 按钮展开任务历史（切换 / 改名 / 导出 / 删除 / 整库导入导出）
+- **不会丢任务**：本地保存改成「合并写」——任何旧副本（第二个标签页、另一个浏览器窗口）都不会再抹掉新任务；另一个窗口一保存，这边立刻同步（storage 事件）；本地数据损坏会自动抢救 + 备份原文；本地存储写不进去时面板直接显示告警
+- **服务端任务库**：任务同时镜像到 `<DSH_HOME>/storages/task-flow-library.json`，换浏览器 / 换 profile / localStorage 被清也能把过往任务合并回来（打开面板自动拉取）
+
 ### 其它
 
+- **📚 过往任务**：下拉框按「当前任务 / 过往任务（N）」分组、每条带 `已完成/总步数` 与最近使用时间；旁边的 📚 按钮展开任务历史（切换 / 改名 / 导出 / 删除 / 整库导入导出）
+- **任务库不丢**：本地保存改成「合并写」——任何旧副本（第二个标签页、另一个浏览器窗口）都不会再抹掉新任务；另一个窗口一保存，这边立刻同步（storage 事件）；本地数据损坏会自动抢救 + 备份原文；本地存储写不进去时面板会直接显示告警
+- **服务端任务库**：任务同时镜像到 `<DSH_HOME>/storages/task-flow-library.json`，换浏览器 / 换 profile / localStorage 被清也能把过往任务合并回来（打开面板自动拉取）
 - **⚡ 下达指令**：当前步骤一键发送「继续执行」指令给 DSH
 - **多流程**：流程下拉切换、新建；JSON 导入 / 导出（schema v2）
 - **窗口自由**：面板可拖动、可调大小；快捷键 `Q` 开关、`Esc` 关闭
@@ -76,7 +85,7 @@ dsh plugin --profile web add github:wqy-cell/dsh-task-flow
 
 ## 隐私
 
-- 流程数据只存本机浏览器 localStorage（key `dsh-task-flow:v2`，旧 v1 数据自动迁移并备份），无遥测、无第三方服务
+- 流程数据默认只存本机浏览器 localStorage（key `dsh-task-flow:v2`，旧 v1 数据自动迁移并备份），无遥测、无第三方服务；同时镜像一份到你自己的 DSH 数据目录 `<DSH_HOME>/storages/task-flow-library.json`（只在 127.0.0.1 的本机服务内读写，用于跨浏览器/跨窗口找回过往任务）
 - 「AI 拆解」仅把你的目标描述发给你的本地 DSH 默认模型；「Agent 自动推进」的事件只在本机内存与浏览器间传递（`/task-flow/events` 轮询）
 - 「向 DSH 下达指令」只向你的本地会话发送你点选的内容
 - 开源代码不包含任何个人数据：无硬编码路径、无凭据、无日志
@@ -88,12 +97,20 @@ dsh-task-flow/
 ├── package.json        # dsh.client 声明（platform: web, immediately: true）
 ├── cordis.patch.yml    # dsh plugin add 使用的挂载声明
 ├── LICENSE             # MIT
-├── lib/index.js        # host 半边：/task-flow/ai-plan、advance、events、state
-├── lib/client.js       # 浏览器半边：数据模型 + 星图渲染 + 编辑器 + AI 面板 + 执行流 + 主线星
+├── lib/index.js        # host 半边：/task-flow/ai-plan、advance、events、state、library（任务库）
+├── lib/client.js       # 浏览器半边：数据模型 + 星图渲染 + 编辑器 + AI 面板 + 执行流 + 主线星 + 任务历史
 ├── docs/schema-v2.md   # 流程数据契约 v2（迁移规则 / 校验规则）
 ├── sync-plugin.ps1     # 开发辅助：工作区源码同步到线上装载目录
 └── test/               # 离线自测：mock-boot.cjs（客户端）+ mock-host.cjs（host 路由）
 ```
+
+## 多窗口 / 多浏览器下的数据规则（v2.1）
+
+任务库（localStorage `dsh-task-flow:v2` + `<DSH_HOME>/storages/task-flow-library.json`）遵循三条不变式：
+
+1. **只增不减**：任何一次保存都是「并集」——同 id 取 `updatedAt` 更新的那份，其余任务原样保留；因此旧副本永远无法抹掉新任务；
+2. **删除留墓碑**：删除会写一条 `deleted[id] = 时间戳`，比该任务最后一次更新更晚，别的窗口即使还留着这份任务也推不回来；
+3. **坏数据不清库**：读不懂的原文会备份到 `dsh-task-flow:v2-corrupt`，并尽力抢救出其中完整的流程；本地写入失败（配额等）会在面板上直接显示，不再静默丢数据。
 
 ## 数据格式
 
