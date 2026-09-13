@@ -152,8 +152,9 @@ $env:DSH_TEST_NODE_MODULES = "你的/dsh/profiles/node_modules"
 node test/mock-boot.cjs
 ```
 
-- 修改 `lib/client.js` 后无需重启，DSH 的 HMR 通道自动热更新；修改 `lib/index.js`（host 半边）需重启 `dsh web`
+- 修改 `lib/client.js` 后无需重启，DSH 的 HMR 通道自动热更新（刷新页面即拿到新 bundle）；修改 `lib/index.js`（host 半边）**必须重启 `dsh web`**
 - 改完代码后运行 `sync-plugin.ps1` 把工作区源码同步到线上插件装载目录（多副本一致性）
+- 重启小抄：工作区里的 `restart-dsh-web-now.bat`（桌面另有副本「重启任务星图服务.bat」）会结束监听 3080 的进程、再经桌面快捷方式重新拉起 `dsh web`，并把结果写进 `restart-now.log`。之所以要手工双击：DSH 沙箱会在一次命令结束时回收它的整棵进程树，任何「活得比 `dsh web` 更久」的重启脚本都会被一起带走
 
 ## 路线图
 

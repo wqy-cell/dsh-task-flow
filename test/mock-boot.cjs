@@ -658,19 +658,22 @@ console.log("场景 8.5：任务库健壮性");
     return true;
   })());
 
-  // 8.5.10 UI：下拉框分「当前任务 / 过往任务」，选项带进度
+  // 8.5.10 UI：任务胶囊（箭头展开任务历史）
   T.switchFlow("demo");
   const htmlLib = render(T.components.PanelContent, { onClose: () => {} });
-  check("下拉框分「当前任务 / 过往任务」两组", htmlLib.includes("当前任务") && htmlLib.includes("过往任务"));
-  check("下拉选项带进度（done/total）", /当前任务[\s\S]*?\d+\/\d+/.test(htmlLib));
-  check("头部有任务库按钮（tf-lib-btn）", htmlLib.includes("tf-lib-btn"));
+  check("头部是任务胶囊（tf-flow-picker）而不是原生 select", htmlLib.includes("tf-flow-picker") && !htmlLib.includes("<select"));
+  check("胶囊带当前任务标题与进度", htmlLib.includes("tf-picker-title") && /tf-picker-progress[^>]*>[^<]*\d+\/\d+/.test(htmlLib));
+  check("胶囊右侧有向下箭头（点它展开历史）", htmlLib.includes("tf-picker-caret"));
+  check("默认不展开任务历史（省空间）", !htmlLib.includes("tf-library"));
+  check("不再有单独的 📚 按钮", !htmlLib.includes("tf-lib-btn"));
   const libHtml = render(T.components.LibrarySection, {
     flows: T.sortedFlows(), activeFlowId: T.getStore().activeFlowId,
     renamingId: null, renameText: "", msg: "测试消息",
     onOpen() {}, onStartRename() {}, onRenameText() {}, onCommitRename() {}, onCancelRename() {},
     onExportOne() {}, onDeleteOne() {}, onNew() {}, onExportAll() {}, onImportFile() {}, onPull() {}
   });
-  check("任务历史列出全部任务", libHtml.includes("过往任务 · 共 " + T.getStore().flows.length + " 个"));
+  check("任务历史列出全部任务", libHtml.includes("任务历史 · 共 " + T.getStore().flows.length + " 个"));
+  check("任务历史分组：当前任务 / 过往任务（N）", libHtml.includes("tf-library-group") && libHtml.includes("当前任务") && /过往任务（\d+）/.test(libHtml));
   check("任务历史含行内操作", libHtml.includes("改名") && libHtml.includes("导出") && libHtml.includes("删除"));
   check("任务历史含库级操作", libHtml.includes("导出全部") && libHtml.includes("导入任务库"));
   check("任务历史显示存储状态", /本地|任务库/.test(libHtml));

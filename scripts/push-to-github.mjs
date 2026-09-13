@@ -17,10 +17,20 @@ const API = "https://api.github.com";
 const OWNER = "wqy-cell";
 const REPO = "dsh-task-flow";
 const BRANCH = "main";
-const TAG_REF = "refs/tags/v2.0.0";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GITDIR = path.join(ROOT, ".git");
+
+/** 打的 tag：默认 v<package.json 版本>，可用 DSH_GH_TAG 覆盖（如 DSH_GH_TAG=v2.1.1）。 */
+function releaseTag() {
+  if (process.env.DSH_GH_TAG) return process.env.DSH_GH_TAG;
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    if (pkg && typeof pkg.version === "string" && pkg.version) return "v" + pkg.version;
+  } catch (e) { /* 读不到就不打 tag */ }
+  return null;
+}
+const TAG_REF = releaseTag() ? "refs/tags/" + releaseTag() : null;
 
 function log(...a) { console.log("[push]", ...a); }
 
@@ -223,13 +233,14 @@ async function main() {
   await api("PATCH", `/repos/${OWNER}/${REPO}/git/refs/heads/${BRANCH}`, { sha: finalSha, force: false });
   log("main →", finalSha.slice(0, 10));
 
-  // 5) 建 tag（轻量：直接指向最终提交）
-  const tagResp = await api("POST", `/repos/${OWNER}/${REPO}/git/refs`, { ref: TAG_REF, sha: finalSha })
-    .catch(async (e) => {
-      // 已存在则更新
-      return api("PATCH", `/repos/${OWNER}/${REPO}/git/refs/tags/v2.0.0`, { sha: finalSha, force: true });
-    });
-  log("tag", TAG_REF, "→", finalSha.slice(0, 10));
+  // 5) 建 tag（轻量：直接指向最终提交）；已存在则指向新提交
+  if (TAG_REF) {
+    await api("POST", `/repos/${OWNER}/${REPO}/git/refs`, { ref: TAG_REF, sha: finalSha })
+      .catch(() => api("PATCH", `/repos/${OWNER}/${REPO}/git/${TAG_REF}`, { sha: finalSha, force: true }));
+    log("tag", TAG_REF, "→", finalSha.slice(0, 10));
+  } else {
+    log("跳过 tag（没读到版本号）");
+  }
   log("完成。mismatches =", mismatches);
 }
 
