@@ -46,13 +46,16 @@
 
 ![一句话长出星图](assets/demo/gif1-一句话长出星图.gif)
 
-**② Agent 干活，星图点亮** —— Agent 通过 `/task-flow/advance` 接口自动推进，节点逐颗绽放，失败步骤红色告警：
+**② Agent 干活，星图点亮** —— Agent 通过 `/task-flow/advance` 接口自动推进，节点逐颗点亮，失败步骤红色告警：
 
 ![AI 推进星图点亮](assets/demo/gif2-AI推进星图点亮.gif)
 
-**③ 会话主线星** —— 星图顶部实时显示 DSH Goal 状态（进行中呼吸 / 受阻染红 / 完成花瓣雨）：
+**③ 任务历史** —— 点标题右侧的箭头展开过往任务：带进度、节点数与最近使用时间，可切换 / 改名 / 导出 / 删除：
 
-![会话主线星](assets/demo/gif3-会话主线星.gif)
+![任务历史](assets/demo/gif3-任务历史.gif)
+
+> 三张动图由仓库里的 `scripts/record-demo.mjs` 自动录制（真实点击、真实模型、真实 `advance` 接口），
+> 原始帧存在 `.demo-frames/`，想换清晰度或体积可以只重编码不重录：`node scripts/encode-demo.mjs`。
 
 ## 安装
 
@@ -100,6 +103,7 @@ dsh-task-flow/
 ├── lib/index.js        # host 半边：/task-flow/ai-plan、advance、events、state、library（任务库）
 ├── lib/client.js       # 浏览器半边：数据模型 + 星图渲染 + 编辑器 + AI 面板 + 执行流 + 主线星 + 任务历史
 ├── docs/schema-v2.md   # 流程数据契约 v2（迁移规则 / 校验规则）
+├── scripts/            # 开发辅助：record-demo（录演示动图）/ encode-demo（重编码）/ gif-encoder / push-to-github
 ├── sync-plugin.ps1     # 开发辅助：工作区源码同步到线上装载目录
 └── test/               # 离线自测：mock-boot.cjs（客户端）+ mock-host.cjs（host 路由）
 ```

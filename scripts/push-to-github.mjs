@@ -206,8 +206,9 @@ async function main() {
       base_tree: parentRemoteCommit.tree.sha,
       tree: changes.map((ch) => ({
         path: ch.path,
-        mode: ch.mode === null ? undefined : (ch.mode === "100755" ? "100755" : "100644"),
-        type: ch.sha === null ? undefined : "blob",
+        // 删除（sha: null）也必须带合法 mode/type，否则 GitHub 报 422 Must supply a valid tree.mode
+        mode: ch.mode === "100755" ? "100755" : "100644",
+        type: ch.type === "commit" ? "commit" : "blob",
         sha: ch.sha === null ? null : ch.sha
       }))
     });
@@ -229,9 +230,10 @@ async function main() {
   }
 
   const finalSha = apiSha.get(headSha);
-  // 4) 更新 main ref
-  await api("PATCH", `/repos/${OWNER}/${REPO}/git/refs/heads/${BRANCH}`, { sha: finalSha, force: false });
-  log("main →", finalSha.slice(0, 10));
+  // 4) 更新 main ref（DSH_GH_FORCE=1 时允许非快进：用于改写刚推上去、还没人依赖的提交）
+  const force = process.env.DSH_GH_FORCE === "1";
+  await api("PATCH", `/repos/${OWNER}/${REPO}/git/refs/heads/${BRANCH}`, { sha: finalSha, force: force });
+  log("main →", finalSha.slice(0, 10), force ? "(force)" : "");
 
   // 5) 建 tag（轻量：直接指向最终提交）；已存在则指向新提交
   if (TAG_REF) {
